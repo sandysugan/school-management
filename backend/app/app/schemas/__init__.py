@@ -19,7 +19,7 @@ from .exams import ExamSchema,BulkExamSchema
 from .marks import MarksSchema,BulkMarksSchema
 from .exam_result import ExamResultSchema,BulkExamResultSchema
 from .timetable import TimeTableSchema,BulkTimeTableSchema
-from .attendance import AttendanceSchema,BulkAttendanceSchema,StudentAttendanceFilterSchema
+from .attendance import AttendanceSchema,BulkAttendanceSchema,AttendanceReportFilter,AttendanceReportRecord,AttendanceReportResponse
 from .leave_request import LeaveRequestSchema
 from .class_group import ClassGroupSchema,BulkClassGroupSchema
 from .question_paper import QuestionPaperSchema,BulkQuestionPaperSchema

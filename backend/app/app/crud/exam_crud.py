@@ -1,7 +1,18 @@
+from collections import defaultdict
+from ctypes import alignment
+import os
+from fastapi.responses import FileResponse
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 from datetime import datetime
-from app.models import Exam,Marks,ExamResult,QuestionPaper,AllocatedMember,Allocation,User
+from app.models import Exam,Marks,ExamResult,QuestionPaper,AllocatedMember,Allocation,User,Subject
 from app.schemas import ExamSchema,MarksSchema,ExamResultSchema,QuestionPaperSchema
+from fpdf import FPDF
+from openpyxl import Workbook
+from openpyxl.styles import Font as ExcelFont, Alignment
+from openpyxl.cell.cell import MergedCell
+from openpyxl.utils import get_column_letter
+
 
 #-----------------------------------CRUD for exams---------------------------------------------------------#
 
@@ -29,8 +40,8 @@ def create_bulk_exams(db: Session, exam_data: list[ExamSchema]):
     db.commit()
     return exam_objs
 
-def get_all_exams(db: Session):
-    return db.query(Exam).filter(Exam.status == 1).all()
+def get_exams_by_allocation_ids(db: Session, allocation_ids: list[int]):
+    return db.query(Exam).filter(Exam.allocation_id.in_(allocation_ids), Exam.status == 1).all()
 
 def get_exam_by_id(db: Session, id: int):
     return db.query(Exam).filter(Exam.id == id).first()
@@ -181,6 +192,306 @@ def delete_exam_result(db: Session, id: int):
         db.commit()
         return True
     return False
+
+def get_student_marks_with_rank(db: Session, student_id: int, exam_id: int):
+    student_result = db.query(ExamResult).filter(
+        ExamResult.student_id == student_id,
+        ExamResult.exam_id == exam_id
+    ).first()
+
+    if not student_result:
+        return {"status": 0, "detail": "Student result not found in this exam"}
+
+    all_totals = (
+        db.query(ExamResult.student_id, ExamResult.total_obtained)
+        .filter(
+            ExamResult.exam_id == exam_id,
+            ExamResult.allocation_id == student_result.allocation_id
+        )
+        .order_by(ExamResult.total_obtained.desc())
+        .all()
+    )
+
+    rank = None
+    for idx, (sid, total) in enumerate(all_totals, start=1):
+        if sid == student_id:
+            rank = idx
+            break
+
+    if rank is None:
+        return {"status": 0, "detail": "Student rank not found in this exam"}
+
+    # Step 3: Get subject-wise marks
+    subject_marks = (
+        db.query(
+            Subject.subject_name.label("subject"),
+            Marks.obtained_marks,
+            Marks.obtained_marks
+        )
+        .join(Marks, Marks.subject_id == Subject.id)
+        .filter(
+            Marks.student_id == student_id,
+            Marks.exam_id == exam_id
+        )
+        .all()
+    )
+
+    return {
+        "status": 1,
+        "data": {
+            "student_id": student_id,
+            "exam_id": exam_id,
+            "total_obtained": student_result.total_obtained,
+            "rank": rank,
+            "subject_marks": [
+                {
+                    "subject": sub,
+                    "total_marks": total,
+                    "obtained_marks": obtained
+                }
+                for sub, total, obtained in subject_marks
+            ]
+        }
+    }
+
+def generate_student_marksheet(student_id: int, db: Session):
+    student = db.query(User).filter(User.id == student_id).first()
+    if not student:
+        return {"status":0, "detail":"Student not found"}
+
+    exam_results = db.query(ExamResult).filter(ExamResult.student_id == student_id).all()
+    if not exam_results:
+        return {"status":0, "detail":"No exam results found for this student"}
+
+    final_data = []
+
+    for er in exam_results:
+        exam = er.exam
+        if not exam:
+            continue
+
+        subject_marks = (
+            db.query(
+                Subject.subject_name,
+                exam.total_marks,
+                Marks.obtained_marks
+            )
+            .join(Marks, Marks.subject_id == Subject.id)
+            .filter(Marks.student_id == student_id, Marks.exam_id == exam.id)
+            .all()
+        )
+
+        all_totals = (
+            db.query(ExamResult.student_id, ExamResult.total_obtained)
+            .filter(ExamResult.exam_id == exam.id)
+            .order_by(desc(ExamResult.total_obtained))
+            .all()
+        )
+
+        rank = None
+        for idx, (sid, _) in enumerate(all_totals, start=1):
+            if sid == student_id:
+                rank = idx
+                break
+
+        final_data.append({
+            "exam_name": exam.exam_name,
+            "total_marks": exam.total_marks,
+            "obtained_marks": er.total_obtained,
+            "rank": rank,
+            "subjects": [
+                {
+                    "subject": s,
+                    "total_marks": tm,
+                    "obtained_marks": om
+                } for s, tm, om in subject_marks
+            ]
+        })
+
+    # Generate PDF
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    pdf.cell(200, 10, txt=f"Mark Sheet for {student.first_name}", ln=True, align="C")
+
+    for exam in final_data:
+        pdf.ln(10)
+        pdf.set_font("Arial", "B", size=12)
+        pdf.cell(200, 10, txt=f"{exam['exam_name'].upper()} RESULT", ln=True)
+        pdf.set_font("Arial", size=12)
+        pdf.cell(100, 10, txt=f"Total Marks: {exam['total_marks']}", ln=True)
+        pdf.cell(100, 10, txt=f"Obtained Marks: {exam['obtained_marks']}", ln=True)
+        pdf.cell(100, 10, txt=f"Rank: {exam['rank']}", ln=True)
+        pdf.ln(5)
+        for sub in exam["subjects"]:
+            pdf.cell(200, 10, txt=f"{sub['subject']} - {sub['obtained_marks']} / {sub['total_marks']}", ln=True)
+
+    upload_dir = r"C:\Users\Admin\Downloads\Python Backend Final\backend\app\uploads"
+
+    os.makedirs(upload_dir, exist_ok=True)
+    pdf_path = os.path.join(upload_dir, f"{student.id}_marksheet.pdf")
+    pdf.output(pdf_path)
+
+    return FileResponse(path=pdf_path, media_type='application/pdf', filename=f"{student.first_name}_marksheet.pdf")
+
+#------------------------------------------------------------------------------------------------------
+
+
+def generate_class_progress_excel(
+    class_id: int,
+    section_id: int,
+    exam_name: str,
+    current_user: User,
+    db: Session
+):
+    # ✅ Access control
+    if current_user.user_community_type == 3:  # Class Teacher
+        allocated = db.query(AllocatedMember).filter(
+            AllocatedMember.user_id == current_user.id,
+            AllocatedMember.allocation.has(
+                class_id=class_id,
+                section_id=section_id
+            ),
+            AllocatedMember.role == "class_teacher"
+        ).first()
+
+        if not allocated:
+            return {"status":0, "detail":"Not authorized as class teacher"}
+
+    elif current_user.user_community_type not in [1, 2]:  # Not admin or principal
+        return {"status":0, "detail":"Unauthorized"}
+
+    # ✅ Find allocation_id for class/section
+    allocation = db.query(Allocation).filter(
+        Allocation.class_id == class_id,
+        Allocation.section_id == section_id,
+        Allocation.status == 1
+    ).first()
+
+    if not allocation:
+        return {"status":0, "detail":"No active allocation found"}
+
+    # ✅ Get all students in this allocation
+    students = db.query(User).join(ExamResult).filter(
+        ExamResult.allocation_id == allocation.id,
+        ExamResult.exam.has(exam_name=exam_name),
+        User.user_community_type == 4
+    ).distinct().all()
+
+    if not students:
+        return {"status":0, "detail":"Student not found"}
+
+    # ✅ Start Excel
+    wb = Workbook()
+    ws = wb.active
+    ws.title = f"Class_{class_id}_Sec_{section_id}"
+
+    title = "2024 - 2025 Progress Report"
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=13)
+    cell = ws.cell(row=1, column=1)
+    cell.value = title
+    cell.font = ExcelFont(size=14, bold=True)
+    cell.alignment = Alignment(horizontal="center")
+    ws.append([])
+
+    headers = [
+        "Roll No", "Student Name", "Exam Name", "Tamil", "English", "Maths", "Science", "Social",
+        "Total", "Obtained", "Average", "Rank"
+    ]
+    ws.append(headers)
+
+    subjects = ["Tamil", "English", "Mathematics", "Science", "Social Science"]
+    exam_summary = defaultdict(list)
+
+    for student in students:
+        exam_results = db.query(ExamResult).join(Exam).filter(
+            ExamResult.student_id == student.id,
+            ExamResult.allocation_id == allocation.id,
+            Exam.exam_name == exam_name
+        ).all()
+
+        for er in exam_results:
+            subject_marks = db.query(
+                Subject.subject_name,
+                Exam.total_marks,
+                Marks.obtained_marks
+            ).join(Marks, Marks.subject_id == Subject.id).join(Exam).filter(
+                Marks.student_id == student.id,
+                Marks.exam_id == er.exam_id
+            ).all()
+
+            all_totals = db.query(ExamResult.student_id, ExamResult.total_obtained).filter(
+                ExamResult.exam_id == er.exam_id,
+                ExamResult.allocation_id == allocation.id
+            ).order_by(desc(ExamResult.total_obtained)).all()
+
+            rank = next((idx for idx, (sid, _) in enumerate(all_totals, start=1) if sid == student.id), None)
+
+            subject_map = {sub: {"obtained": 0, "total": 0} for sub in subjects}
+            for sub_name, total, obtained in subject_marks:
+                if sub_name in subject_map:
+                    subject_map[sub_name] = {"obtained": obtained, "total": total}
+
+            obtained_total = er.total_obtained
+            total_marks = er.exam.total_marks
+            avg = obtained_total / len(subjects)
+
+            exam_summary[er.exam.exam_name].append((obtained_total, total_marks))
+
+            row = [
+                student.roll_number,
+                student.first_name,
+                er.exam.exam_name,
+                f"{subject_map['Tamil']['obtained']} / {subject_map['Tamil']['total']}",
+                f"{subject_map['English']['obtained']} / {subject_map['English']['total']}",
+                f"{subject_map['Mathematics']['obtained']} / {subject_map['Mathematics']['total']}",
+                f"{subject_map['Science']['obtained']} / {subject_map['Science']['total']}",
+                f"{subject_map['Social Science']['obtained']} / {subject_map['Social Science']['total']}",
+                total_marks,
+                obtained_total,
+                round(avg, 2),
+                rank
+            ]
+            ws.append(row)
+
+    # ✅ Class average
+    for exam_name, results in exam_summary.items():
+        total_obt = sum(x[0] for x in results)
+        total_marks = results[0][1] if results else 0
+        student_count = len(results)
+        avg_obt = total_obt / student_count
+        avg_avg = avg_obt / len(subjects)
+
+        avg_row = [
+            "-", f"Class Average",
+            exam_name,
+            "-", "-", "-", "-", "-",
+            total_marks,
+            round(avg_obt, 2),
+            round(avg_avg, 2),
+            "-"
+        ]
+        ws.append(avg_row)
+
+        # ✅ Auto column width
+    for col_cells in ws.columns:
+        col_letter = get_column_letter(col_cells[0].column)  # Safe way to get column letter
+        max_length = 0
+        for cell in col_cells:
+            if not isinstance(cell, MergedCell) and cell.value:
+                max_length = max(max_length, len(str(cell.value)))
+        ws.column_dimensions[col_letter].width = max_length + 2
+
+
+    # ✅ Save and return
+    upload_dir = r"C:\Users\Admin\Downloads\Python Backend Final\backend\app\uploads"
+    os.makedirs(upload_dir, exist_ok=True)
+    file_name = f"Progress_Report_{class_id}_{section_id}_{exam_name}.xlsx"
+    file_path = os.path.join(upload_dir, file_name)
+    wb.save(file_path)
+
+    return FileResponse(file_path, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename=file_name)
+
 
 #------------------------------------CRUD for question paper-----------------------------------------------------------#
 

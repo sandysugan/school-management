@@ -4,7 +4,6 @@ from app.models import User
 from app.core.security import get_password_hash
 from app.schemas.users import UserCreate
 from typing import List
-from fastapi import HTTPException
 
 def check_create_permission(current_user_role: int, new_user_role: int):
     if current_user_role == 1:
@@ -33,20 +32,20 @@ def create_bulk_users(
 
     for user in users:
         if creator_type == 3 and user.user_community_type != 4:
-            raise HTTPException(status_code=403, detail="Staff can only create students")
+            return {"status":0, "detail":"Staff can only create students"}
         elif creator_type==2 and user.user_community_type==1:
-            raise HTTPException(status_code=403,detail="You are not allowed to create admin")
+            return {"status":0,"detail":"You are not allowed to create admin"}
 
         existing = db.query(User).filter(User.status == 1)
 
         if existing.filter(User.user_name == user.user_name).first():
-            raise HTTPException(status_code=400, detail="Username already exists")
+            return {"status":"0", "detail":"Username already exists"}
 
         if existing.filter(User.email == user.email).first():
-            raise HTTPException(status_code=400, detail="Email already exists")
+            return {"status":"0", "detail":"Email already exists"}
 
         if existing.filter(User.phone_number == user.phone_number).first():
-            raise HTTPException(status_code=400, detail="Phone number already exists")
+            return {"status":"0", "detail":"Phone number already exists"}
 
         user_obj = User(
             user_name=user.user_name,
@@ -78,7 +77,7 @@ def create_bulk_users(
 def get_user(db: Session, user_id: int):
     user = db.query(User).filter(User.id == user_id, User.status == 1).first()
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        return {"status":"0", "detail":"User not found"}
     return user
 
 def get_all_users(db: Session, skip: int = 0, limit: int = 100):
@@ -87,7 +86,7 @@ def get_all_users(db: Session, skip: int = 0, limit: int = 100):
 def update_user(db: Session, user_id: int, data: UserCreate, updated_by: int):
     user = db.query(User).filter(User.id == user_id, User.status == 1).first()
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        return {"status":"0", "detail":"User not found"}
 
     for field, value in data.dict(exclude_unset=True).items():
         if field == "password":
@@ -105,7 +104,7 @@ def update_user(db: Session, user_id: int, data: UserCreate, updated_by: int):
 def delete_user(db: Session, user_id: int, updated_by: int):
     user = db.query(User).filter(User.id == user_id, User.status == 1).first()
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        return {"status":"0", "detail":"User not found"}
 
     user.status = 0
     user.updated_by = updated_by

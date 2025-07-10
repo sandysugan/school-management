@@ -78,7 +78,7 @@ def get_book(
         "updated_at": book.updated_at
     }
 
-@router.post("update_book/{id}")
+@router.post("/update_book/{id}")
 def update_book(
     id: int,
     data: BookSchema,
@@ -101,7 +101,7 @@ def update_book(
         "updated_by": updated_book.updated_by
     }
 
-@router.post("delete_book/{id}")
+@router.post("/delete_book/{id}")
 def delete_book(
     id: int,
     db: Session = Depends(deps.get_db),

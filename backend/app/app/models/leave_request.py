@@ -1,6 +1,6 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime,Date
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from datetime import date,datetime
 from app.db.base_class import Base
 
 class LeaveRequest(Base):
@@ -10,8 +10,8 @@ class LeaveRequest(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     allocation_id = Column(Integer, ForeignKey("allocations.id"), nullable=False) 
     reason = Column(String(255), nullable=True)
-    from_date = Column(DateTime, nullable=False)
-    to_date = Column(DateTime, nullable=False)
+    from_date = Column(Date, nullable=False)
+    to_date = Column(Date, nullable=False)
     status = Column(String(20), default="Pending") 
     created_by = Column(Integer)
     created_at = Column(DateTime, default=datetime.utcnow)

@@ -243,7 +243,7 @@ def list_classes(
     return classes
 
 
-@router.post("get_class/{id}")
+@router.post("/get_class/{id}")
 def get_class(
     id: int,
     db: Session = Depends(deps.get_db),
@@ -330,7 +330,7 @@ def list_sections(
     
     return academic_crud.get_all_sections(db)
 
-@router.post("get_section/{id}")
+@router.post("/get_section/{id}")
 def get_section(
     id: int,
     db: Session = Depends(deps.get_db),

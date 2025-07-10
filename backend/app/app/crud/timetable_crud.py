@@ -17,7 +17,7 @@ def create_bulk_timetables(db: Session, timetable_data: list[TimeTableSchema]):
             status=data.status,
             created_by=data.created_by,
             updated_by=data.updated_by,
-            created_at=now,
+            created_at=now, 
             updated_at=now
         )
         timetable_objs.append(obj)

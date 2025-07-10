@@ -1,9 +1,11 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends,Query
 from sqlalchemy.orm import Session
 from app.api import deps
-from app.models import User,AllocatedMember
-from app.schemas import AttendanceSchema, BulkAttendanceSchema,LeaveRequestSchema,StudentAttendanceFilterSchema
+from app.models import User
+from app.schemas import AttendanceSchema, BulkAttendanceSchema,LeaveRequestSchema,AttendanceReportResponse
 from app.crud import attendance_crud
+from typing import List,Optional
+from datetime import date
 
 router = APIRouter()
 
@@ -14,158 +16,100 @@ def bulk_create_attendance(
     data: BulkAttendanceSchema,
     db: Session = Depends(deps.get_db),
     current_user: User = Depends(deps.get_current_user)
-):
+): 
+    if current_user.user_community_type not in [2, 3]:
+        return {"status": 0, "detail": "Unauthorized user"}
+
+    validated_records = []
+
     for record in data.records:
         target_user = db.query(User).filter(User.id == record.user_id).first()
         if not target_user:
             return {"status": 0, "detail": f"User ID {record.user_id} not found"}
 
-        if not attendance_crud.is_authorized(current_user, target_user.user_community_type):
-            return {"status": 0, "detail": f"Unauthorized to mark user ID {record.user_id}"}
-        
+        if not attendance_crud.is_authorized_bulk(current_user, target_user, db, record.allocation_id):
+            return {"status": 0, "detail": f"Not allowed to mark attendance for user ID {record.user_id}"}
+
         record.created_by = current_user.id
         record.updated_by = current_user.id
+        validated_records.append(record)
 
-    created = attendance_crud.create_bulk_attendance(db, data.records)
+    created = attendance_crud.create_bulk_attendance(db, validated_records)
+
     return {
         "status": 1,
         "msg": f"{len(created)} attendance records created successfully",
-        "data": [{"attendance_id":a.id,"marked_by":a.created_by} for a in created]
+        "data": [{"attendance_id": a.id, "marked_by": a.created_by} for a in created]
     }
+#-----------------------------------------------------------------------------------------------------------------------
+
+@router.post("/report")
+def attendance_report(
+    db: Session = Depends(deps.get_db),
+    current_user: User = Depends(deps.get_current_user),
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
+    user_id: Optional[int] = Query(None),
+    allocation_id: Optional[int] = Query(None)
+):
+    return attendance_crud.get_attendance_report(
+        db=db,
+        current_user=current_user,
+        from_date=from_date,
+        to_date=to_date,
+        user_id=user_id,
+        allocation_id=allocation_id
+    )
+#------------------------------------------------------------------------------------------------------------------------
 
 
-@router.post("/view_attendance")
-def list_attendance(
-    filters: StudentAttendanceFilterSchema,
+@router.post("/update")
+def update_attendance_record(
+    attendance_id: int,
+    status: str,
     db: Session = Depends(deps.get_db),
     current_user: User = Depends(deps.get_current_user)
 ):
-    from_date = filters.from_date
-    to_date = filters.to_date
-    allocation_id = filters.allocation_id
-
-    if current_user.user_community_type in [1, 2]:
-        records = attendance_crud.get_attendance_filtered(
-            db=db,
-            allocation_id=allocation_id,
-            from_date=from_date,
-            to_date=to_date
-        )
-
-    elif current_user.user_community_type == 3:
-        if not allocation_id:
-            return {"status": 0, "detail": "allocation_id required for teachers"}
-
-        allocation_check = db.query(AllocatedMember).filter(
-            AllocatedMember.allocation_id == allocation_id,
-            AllocatedMember.user_id == current_user.id
-        ).first()
-
-        if not allocation_check:
-            return {"status": 0, "detail": "Unauthorized for this class"}
-
-        records = attendance_crud.get_student_attendance(
-            db=db,
-            allocation_id=allocation_id,
-            from_date=from_date,
-            to_date=to_date)
-    elif current_user.user_community_type == 4:
-        records = attendance_crud.get_student_attendance(
-            db=db,
-            student_id=current_user.id,
-            from_date=from_date,
-            to_date=to_date
-        )
-
-    else:
-        return {"status": 0, "detail": "Unauthorized User"}
-
-    return {
-        "status": 1,
-        "count": len(records),
-        "data": records
-    }
-
-
-@router.post("/get_attendance/{id}")
-def get_attendance(
-    id: int,
-    db: Session = Depends(deps.get_db),
-    current_user: User = Depends(deps.get_current_user)
-):
-    if current_user.user_community_type not in [1,2,3,4]:
-         return {"status":0, "detail":"Unauthorized User"}
-
-    record = attendance_crud.get_attendance_by_id(db, id)
-    if not record:
-        return {"status":0,"detail":"Attendance record not found"}
-
-    return record
-
-@router.post("/update_attendance/{id}")
-def update_attendance(
-    id: int,
-    data: AttendanceSchema,
-    db: Session = Depends(deps.get_db),
-    current_user: User = Depends(deps.get_current_user)
-):
-    for record in data.records:
-        target_user = db.query(User).filter(User.id == record.user_id).first()
-        if not target_user:
-            return {"status": 0, "detail": f"User ID {record.user_id} not found"}
-
-        if not attendance_crud.is_authorized_to_mark(current_user, target_user.user_community_type):
-            return {"status": 0, "detail": f"Unauthorized to mark user ID {record.user_id}"}
-
-    data.updated_by = current_user.id
-    updated = attendance_crud.update_attendance(db, id, data)
-    if not updated:
-        return {"status":0,"detail":"Attendance record not found"}
-
-    return {
-        "msg": "Attendance record updated successfully",
-        "id": updated.id
-    }
-
-@router.post("/delete_attendance/{id}")
-def delete_attendance(
-    id: int,
-    db: Session = Depends(deps.get_db),
-    current_user: User = Depends(deps.get_current_user)
-):
-    if current_user.user_community_type not in [1,2]:
-         return {"status":0, "detail":"Unauthorized User"}
-
-    success = attendance_crud.delete_attendance(db, id)
-    if not success:
-        return {"status":0,"detail":"Attendance record not found"}
-
-    return {
-        "status": 1,
-        "msg": "Attendance record deleted successfully"
-    }
+    return attendance_crud.update_attendance(
+        db=db,
+        current_user=current_user,
+        attendance_id=attendance_id,
+        new_status=status
+    )
 
 #----------------------------------api for leave request------------------------------------------------#
 
 
-@router.post("/create")
-def create_leave_request(
-    data: LeaveRequestSchema,
+@router.post("/request")
+def request_leave(
+    allocation_id: int,
+    from_date: date,
+    to_date: date,
+    reason: str = "",
     db: Session = Depends(deps.get_db),
-    current_user: User = Depends(deps.get_current_user),
+    current_user: User = Depends(deps.get_current_user)
 ):
-    if current_user.user_community_type not in [3,4]:
-         return {"status":0, "detail":"Unauthorized User"}
-     
-    data.created_by = current_user.id
-    data.updated_by = current_user.id
-
-    leave = attendance_crud.create_leave_request(db, data)
-    return {
-        "status": 1,
-        "msg": "Leave request submitted successfully",
-        "leave_id": leave.id
+    data = {
+        "allocation_id": allocation_id,
+        "from_date": from_date,
+        "to_date": to_date,
+        "reason": reason
     }
+    return attendance_crud.create_leave_request(db, current_user, data)
+
+
+@router.post("/approve_or_reject")
+def approve_or_reject_leave(
+    leave_id: int,
+    status: str,   
+    db: Session = Depends(deps.get_db),
+    current_user: User = Depends(deps.get_current_user)
+):
+    if status not in ["Approved", "Rejected"]:
+        return {"status": 0, "detail": "Status must be 'Approved' or 'Rejected'"}
+
+    return attendance_crud.update_leave_status(db, current_user, leave_id, status)
+
 
 @router.post("/list_leave_request")
 def list_leave_requests(
